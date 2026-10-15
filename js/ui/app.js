@@ -1,201 +1,417 @@
-/* 页面展示与事件处理。所有数据读写通过 XinghuoStore 完成。 */
+/* 页面层：资料与个人记录通过 PokeStore 访问；属性计算通过 PokeRules 完成。 */
 (() => {
-  const store = window.XinghuoStore;
+  const store = window.PokeStore, rules = window.PokeRules;
   const $ = selector => document.querySelector(selector);
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-  const paths = {
-    grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
-    board: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16m6-16v16M5.5 8h1M11.5 8h1M17.5 8h1"/>',
-    box: '<path d="m12 3 9 5v9l-9 5-9-5V8l9-5Zm-9 5 9 5 9-5M12 13v9M7.5 5.5l9 5"/>',
-    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
-    chart: '<path d="M4 3v17h17M8 16v-5m5 5V7m5 9V4"/>',
-    calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 11h18m-14 4h2m4 0h2"/>',
-    logout: '<path d="M10 4H4v16h6m4-12 4 4-4 4m-6-4h10"/>',
-    search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
-    plus: '<path d="M12 5v14M5 12h14"/>',
-    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-    check: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
-    tool: '<path d="m14 5 5 5M6 20l-2-2 8-8a6 6 0 0 1 8-7l-4 4 2 2 4-4a6 6 0 0 1-7 8L6 20Z"/>',
-    lamp: '<path d="m8 3 8 0 4 9H4l4-9ZM12 12v7m-5 2h10m-9-2h8"/>',
-    fan: '<circle cx="12" cy="10" r="8"/><circle cx="12" cy="10" r="1.5"/><path d="M12 8c-5-8 6-6 2 1M13 11c8-2 3 7-1 1M10.5 10.5c-2 7-7 1 0-1M12 18v3m-5 0h10"/>',
-    plug: '<rect x="4" y="6" width="16" height="12" rx="3"/><path d="M8 10v3m4-3v3m4-3v3M12 18v4M12 2v4"/>',
-    kettle: '<path d="M7 7h9l2 12H5L7 7Zm2-4h5m-3 0v4m5 3h3a3 3 0 0 1 0 6h-2M5 10H2l3 5"/>',
-    speaker: '<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="15" r="4"/><circle cx="12" cy="6" r="1.5"/>',
-    download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>'
-  };
-  const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.tool}</svg>`;
-  const statusNames = { pending: '待接单', active: '维修中', parts: '待配件', done: '已修好' };
-  const views = { dashboard: '工作概览', orders: '工单看板', inventory: '配件台账', mine: '我的工单', captain: '队长后台' };
-  let snapshot, view = 'dashboard', query = '', groupFilter = '', toastTimer;
-  const owner = order => snapshot.users.find(user => user.id === order.ownerId);
-  const me = () => snapshot.currentUser;
-  const isCaptain = () => me()?.role === 'captain';
-  const editable = order => isCaptain() || order.ownerId === me()?.id;
-  const mine = () => snapshot.orders.filter(order => order.ownerId === me().id);
-  const time = (value, full = false) => new Date(value).toLocaleString('zh-CN', full ? { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false } : { hour: '2-digit', minute: '2-digit', hour12: false });
-  const weekStart = () => { const date = new Date(); date.setDate(date.getDate() - (date.getDay() + 6) % 7); date.setHours(0, 0, 0, 0); return date; };
-  const thisWeek = rows => rows.filter(row => new Date(row.receivedAt || row.time) >= weekStart() && new Date(row.receivedAt || row.time) <= new Date());
-  const pill = order => `<span class="status-pill ${order.status}">${statusNames[order.status]}</span>`;
-  const groupTag = group => `<span class="tag ${group === '电工组' ? 'electric' : group === '焊工组' ? 'welding' : 'general'}">${escape(group)}</span>`;
-  const itemIcon = kind => `<span class="item-icon">${icon(kind)}</span>`;
-  function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 3500); }
+  const labels = { hp: 'HP', attack: '攻击', defense: '防御', 'special-attack': '特攻', 'special-defense': '特防', speed: '速度' };
+  const colors = { normal: '#929ba5', fire: '#e58055', water: '#5c92d5', electric: '#dfb43c', grass: '#70a879', ice: '#70b5b9', fighting: '#bd7266', poison: '#a87bbb', ground: '#bf9765', flying: '#909dcc', psychic: '#d889a5', bug: '#8ea25a', rock: '#b2a079', ghost: '#8a80b0', dragon: '#737cb6', dark: '#807773', steel: '#859aab', fairy: '#d89ebb' };
+  const emptyProfile = () => ({ favorites: [], teams: [], practices: [] });
+  let catalog, challenges = [], user = null, profile = emptyProfile(), view = 'dex';
+  let opponentChoice = null;
+  let query = '', filterType = '', sort = 'number', compareIds = [], draft = [], teamMeta = { id: null, name: '', note: '' };
+  let attack = 'fire', labTargetId = 1, labLaunched = false, toastTimer, quiz = null;
+  const byId = id => catalog.pokemon.find(item => item.id === Number(id));
+  const typeName = id => catalog.types.find(type => type.id === id)?.name || id;
+  const number = id => `#${String(id).padStart(3, '0')}`;
+  const typePill = id => `<span class="type-pill" style="--type-color:${colors[id]}">${escape(typeName(id))}</span>`;
+  const artwork = (item, css = '', decorative = false) => `<img class="${css}" src="${escape(item.image)}" alt="${decorative ? '' : escape(item.name)}" width="475" height="475" loading="${css === 'hero-pikachu' ? 'eager' : 'lazy'}">`;
+  const heroTitle = (eyebrow, title, text) => `<div class="page-title"><span class="eyebrow">${eyebrow}</span><h1>${title}</h1><p>${text}</p></div>`;
+  const empty = (title, text, action = '') => `<div class="empty-state"><span class="empty-orbit" aria-hidden="true">✧</span><h3>${title}</h3><p>${text}</p>${action}</div>`;
+  function toast(text) {
+    clearTimeout(toastTimer); $('#toast').textContent = text; $('#toast').hidden = false;
+    toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 3600);
+  }
   async function action(button, task) {
     if (button?.disabled) return;
     if (button) button.disabled = true;
     try { await task(); } catch (error) { toast(error.message); }
-    finally { if (button) button.disabled = false; }
+    finally { if (button?.isConnected) button.disabled = false; }
   }
-  function heading(title, subtitle, actions = '') {
-    return `<div class="page-heading"><div><span class="eyebrow">SPARK / ${new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'long' })}</span><h1>${escape(title)}</h1><p>${escape(subtitle)}</p></div><div class="heading-actions">${actions}</div></div>`;
+  async function refreshUser() {
+    const previous = user;
+    user = await store.getSession();
+    if (previous && previous.id !== user?.id) { draft = []; teamMeta = { id: null, name: '', note: '' }; opponentChoice = null; }
+    profile = user ? await store.getProfile() : emptyProfile();
   }
-  const newButton = () => `<button class="button primary" data-action="new">${icon('plus')}登记工单</button>`;
-  function stats() {
-    const weekly = thisWeek(snapshot.orders), done = weekly.filter(order => order.status === 'done').length;
-    const cards = [
-      ['本周送修工单', weekly.length, '单', '每一件送修物品，都有记录', 'board', true],
-      ['待接工单', snapshot.orders.filter(order => order.status === 'pending').length, '单', '还有小物件等你伸出援手', 'clock'],
-      ['本周已修好', done, '单', `本周工单完成率 ${weekly.length ? Math.round(done / weekly.length * 100) : 0}%`, 'check'],
-      ['维修队成员', snapshot.users.length, '人', '电工 / 焊工 / 综合，三个小组', 'user']
+  function header() {
+    document.querySelectorAll('.main-nav [data-view]').forEach(button => {
+      const active = button.dataset.view === view;
+      button.classList.toggle('active', active);
+      if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+    });
+    $('#favorite-count').textContent = profile.favorites.length;
+    $('#draft-count').textContent = draft.length;
+    $('#account-button').innerHTML = user ? `<span class="account-dot">${escape(user.name.slice(0, 1))}</span>${escape(user.name)}` : '登录 / 注册 <span aria-hidden="true">↗</span>';
+  }
+  function card(item) {
+    const favorite = profile.favorites.includes(item.id), compared = compareIds.includes(item.id), added = draft.includes(item.id);
+    return `<article class="pokemon-card" style="--type-color:${colors[item.types[0]]}">
+      <div class="card-top"><span class="number">${number(item.id)}</span><button class="favorite-button ${favorite ? 'selected' : ''}" data-action="favorite" data-id="${item.id}" aria-label="${favorite ? '取消收藏' : '收藏'}${escape(item.name)}" aria-pressed="${favorite}">${favorite ? '♥' : '♡'}</button></div>
+      <button class="card-detail" data-action="detail" data-id="${item.id}" aria-label="查看${escape(item.name)}详情"><div class="art-circle">${artwork(item, 'card-art', true)}</div><h3>${escape(item.name)}</h3><p class="english-name">${escape(item.slug)}</p></button>
+      <div class="card-types">${item.types.map(typePill).join('')}</div>
+      <div class="card-meta"><span>配队成本</span><strong>${item.total} 点</strong><span class="micro-bar"><i style="width:${item.total / 750 * 100}%"></i></span></div>
+      <div class="card-actions"><button data-action="compare" data-id="${item.id}" class="compare-button ${compared ? 'selected' : ''}" aria-pressed="${compared}">${compared ? '✓ 已选对比' : '⇄ 对比'}</button><button class="add-button ${added ? 'selected' : ''}" data-action="add" data-id="${item.id}" ${added ? 'disabled' : ''}>${added ? '✓ 在队伍中' : '＋ 加入队伍'}</button></div>
+    </article>`;
+  }
+  function filtered(items) {
+    const term = query.trim().toLowerCase().replace(/^#/, '');
+    const result = items.filter(item => (!term || item.name.includes(term) || item.slug.includes(term)
+      || String(item.id) === term || String(item.id).padStart(3, '0') === term) && (!filterType || item.types.includes(filterType)));
+    return result.sort((a, b) => sort === 'total' ? b.total - a.total || a.id - b.id : sort === 'height' ? b.height - a.height || a.id - b.id : sort === 'weight' ? b.weight - a.weight || a.id - b.id : a.id - b.id);
+  }
+  function catalogSection(favorites = false) {
+    return `<section class="catalog-section"><div class="section-heading"><div><span class="eyebrow">${favorites ? 'YOUR LITTLE COLLECTION' : 'MEET YOUR NEXT PARTNER'}</span><h2>${favorites ? '喜欢的，都放在这里。' : '从这里，认识你的伙伴。'}</h2></div><span id="result-count" class="result-count"></span></div>
+      <div class="filter-row"><label class="search-field"><span aria-hidden="true">⌕</span><input id="search" type="search" value="${escape(query)}" placeholder="搜索名字 / 英文名 / 编号" aria-label="搜索宝可梦"></label><label class="select-field"><span>属性</span><select id="type-filter" aria-label="筛选属性"><option value="">全部属性</option>${catalog.types.map(type => `<option value="${type.id}" ${filterType === type.id ? 'selected' : ''}>${escape(type.name)}</option>`).join('')}</select></label><label class="select-field"><span>排序</span><select id="sort" aria-label="排序方式">${[['number', '图鉴编号'], ['total', '能力总和 ↓'], ['height', '身高 ↓'], ['weight', '体重 ↓']].map(([key, name]) => `<option value="${key}" ${sort === key ? 'selected' : ''}>${name}</option>`).join('')}</select></label></div>
+      <div class="type-shortcuts" aria-label="快速属性筛选">${[['', '全部'], ...['grass', 'fire', 'water', 'electric', 'psychic', 'ghost', 'dragon'].map(key => [key, typeName(key)])].map(([key, label]) => `<button data-action="filter" data-type="${key}" class="filter-chip ${filterType === key ? 'active' : ''}" aria-pressed="${filterType === key}">${escape(label)}</button>`).join('')}<button data-action="reset-filters" class="text-button reset-filters">重置筛选</button></div>
+      <div class="pokemon-grid" id="pokemon-grid"></div></section>`;
+  }
+  function updateGrid() {
+    if (!$('#pokemon-grid')) return;
+    const base = view === 'favorites' ? catalog.pokemon.filter(item => profile.favorites.includes(item.id)) : catalog.pokemon;
+    const items = filtered(base);
+    $('#result-count').textContent = `${items.length} / ${base.length} 只伙伴`;
+    $('#pokemon-grid').innerHTML = items.length ? items.map(card).join('') : empty('还没有发现。', '试试其他名字或属性，或者重置筛选。');
+    document.querySelectorAll('.filter-chip').forEach(button => {
+      const active = button.dataset.type === filterType;
+      button.classList.toggle('active', active); button.setAttribute('aria-pressed', active);
+    });
+  }
+  function beginnerGuideHtml() {
+    const terms = [
+      ['HP · 体力', '影响能够承受多少伤害。'],
+      ['攻击', '影响物理招式的伤害。'],
+      ['防御', '影响承受物理招式伤害的能力。'],
+      ['特攻', '影响特殊招式的伤害。'],
+      ['特防', '影响承受特殊招式伤害的能力。'],
+      ['速度', '影响通常情况下的出手顺序。']
     ];
-    return `<div class="stats-grid">${cards.map(([label, value, unit, note, name, accent]) => `<div class="stat-card ${accent ? 'accent' : ''}">${icon(name)}<p class="stat-label">${label}</p><p class="stat-number">${value}<span>${unit}</span></p><p class="stat-note">${note}</p></div>`).join('')}</div>`;
+    return `<details class="beginner-guide"><summary><span>第一次来？看懂这些再配队</span><small>新手说明 · 术语与步骤</small></summary><div class="beginner-content">
+      <h3>从喜欢的角色开始，一次只观察一件事。</h3>
+      <ol class="beginner-steps"><li><strong>认识伙伴</strong><span>在图鉴点开角色，看看属性与六项基础能力。</span></li><li><strong>试一试属性</strong><span>在属性实验室选择攻击属性与接招伙伴，发射后观察反应。</span></li><li><strong>完成首次配队</strong><span>在“我的队伍”选择六位伙伴，留意预算和共同弱点，尝试新手任务。</span></li></ol>
+      <h3>六项能力，各自表示什么？</h3><dl class="stat-glossary">${terms.map(([term, description]) => `<div><dt>${term}</dt><dd>${description}</dd></div>`).join('')}</dl>
+      <p><strong>基础值：</strong>这里展示角色设定中的基础能力，用来观察不同方向；具体能力还受等级等条件影响，能力总和不能直接代表胜负。</p>
+      <p><strong>弱点、抵抗与无效：</strong>面对某种属性攻击，倍率大于 1 是弱点，小于 1 是抵抗，等于 0 表示无效。本页的抵抗人数包含无效成员；双属性的两个倍率相乘，例如冰对草／飞行是 2 × 2 = 4。</p>
+      <p><strong>配队预算：</strong>每位伙伴的成本等于六项基础能力之和。${rules.TEAM_BUDGET} 点是发现室自定的挑战上限，让搭配有取舍。</p>
+      <button class="text-button" data-view="team">去我的队伍试一试 ↗</button>
+    </div></details>`;
   }
-  function card(order) {
-    const person = owner(order);
-    return `<button class="order-card" data-order="${escape(order.id)}" aria-label="查看${escape(order.item)}工单 ${escape(order.id)}"><span class="card-top"><span class="order-code">${escape(order.id)}</span>${groupTag(order.group)}</span><span class="card-title">${itemIcon(order.kind)}${escape(order.item)}</span><p class="card-description">${escape(order.description)}</p><span class="card-footer"><span class="card-owner ${person ? '' : 'unassigned'}">${person ? `<span class="avatar">${escape(person.name.slice(-1))}</span>${escape(person.name)}` : '○ 等待接单'}</span><span>${time(order.updatedAt)} 更新</span></span></button>`;
+  function dex() {
+    const pikachu = byId(25), bulbasaur = byId(1), eevee = byId(133);
+    return `<section class="hero"><div class="hero-copy"><span class="eyebrow"><span class="live-dot"></span>151 个伙伴 · 无数种搭配</span><h1>从一眼喜欢，<br>到一支<span class="orange-text">默契的队伍。</span></h1><p>认识角色，读懂属性，试着搭配。<br>你的第一场发现，从这里开始。</p><div class="hero-buttons"><button class="button orange" data-action="explore">探索图鉴 <span>↓</span></button><button class="button outline" data-view="lab">试试属性实验 ↗</button></div><div class="hero-foot"><span class="tiny-pictures">${[1, 4, 7].map(id => artwork(byId(id), '', true)).join('')}</span><p><strong>001—151，熟悉的初代伙伴</strong><br>中文图鉴 / 公开资料 / 你的个人队伍</p></div></div>
+      <div class="hero-art"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><span class="hero-spark spark-one">✧</span><span class="hero-spark spark-two">✳</span><span class="hero-stamp">HELLO,<br>NEW FRIEND!</span><button class="hero-character" data-action="detail" data-id="25" aria-label="认识皮卡丘">${artwork(pikachu, 'hero-pikachu', true)}</button><button class="floating-card float-grass" data-action="detail" data-id="1">${artwork(bulbasaur, '', true)}<span><small>${number(1)} · 草 / 毒</small><strong>${escape(bulbasaur.name)}</strong></span><span class="float-arrow">↗</span></button><button class="floating-card float-eevee" data-action="detail" data-id="133">${artwork(eevee, '', true)}<span><small>${number(133)} · 一般</small><strong>${escape(eevee.name)}</strong></span><span class="float-arrow">↗</span></button><span class="hero-art-caption">每一种不同，都有自己的闪光点。</span></div></section>
+      <div class="discovery-steps"><div><span class="step-icon green">⌕</span><p><strong>发现你的伙伴</strong><span>按名字与属性，找到一眼喜欢的角色</span></p><b>01</b></div><div><span class="step-icon blue">⇄</span><p><strong>读懂它们的不同</strong><span>比较基础能力，试验属性关系</span></p><b>02</b></div><div><span class="step-icon peach">✧</span><p><strong>组成自己的队伍</strong><span>六个位置，搭配属于你的可能</span></p><b>03</b></div></div>${beginnerGuideHtml()}${catalogSection()}`;
   }
-  function filteredOrders() { const term = query.trim().toLowerCase(); return snapshot.orders.filter(order => (!term || `${order.id} ${order.item} ${order.description} ${owner(order)?.name || ''}`.toLowerCase().includes(term)) && (!groupFilter || order.group === groupFilter)); }
-  function board() {
-    const orders = filteredOrders();
-    return Object.keys(statusNames).map(status => {
-      const items = orders.filter(order => order.status === status);
-      return `<section class="board-column" data-status="${status}"><h3 class="column-heading"><span class="column-dot"></span>${statusNames[status]}<span class="column-count">${items.length}</span>${icon(status === 'done' ? 'check' : 'board')}</h3>${items.map(card).join('') || '<p class="empty-column">这里暂时没有工单</p>'}${status === 'pending' ? '<button class="add-card" data-action="new">＋ 登记一件送修物品</button>' : ''}</section>`;
-    }).join('');
+  function favorites() {
+    if (!user) return heroTitle('YOUR FAVORITES', '把喜欢，留在发现室。', '登录后保存自己的收藏。图鉴与属性实验可以直接体验。') + empty('为你的收藏取个名字。', '试用 leaf / poke123，或者创建一个本地账号。', '<button class="button orange" data-action="account">登录 / 注册 ↗</button>');
+    return heroTitle('YOUR FAVORITES', `${escape(user.name)}的收藏夹`, `已收藏 ${profile.favorites.length} 只伙伴。收藏与队伍仅保存在当前浏览器。`) + (profile.favorites.length ? catalogSection(true) : empty('第一位伙伴，正在等你。', '点击图鉴卡片上的爱心，它就会来到这里。', '<button class="button orange" data-view="dex">去发现伙伴 ↗</button>'));
   }
-  function boardSection() {
-    return `<section aria-label="工单看板"><div class="section-head"><div class="section-title"><h2>工单看板</h2><span class="section-meta" id="board-meta">${filteredOrders().length} 单 · 点击卡片查看详情</span></div><div class="filters"><label class="search-box" for="search-orders">${icon('search')}<input id="search-orders" type="search" aria-label="搜索工单、物品或负责人" placeholder="搜索工单、物品、负责人" value="${escape(query)}"></label><select id="filter-group" aria-label="按维修组筛选"><option value="">全部小组</option>${['电工组', '焊工组', '综合组'].map(group => `<option ${groupFilter === group ? 'selected' : ''}>${group}</option>`).join('')}</select></div></div><div class="board" id="board-columns">${board()}</div></section>`;
+  function statBars(item) {
+    return rules.statKeys.map(key => `<div class="stat-row"><span>${labels[key]}</span><span class="stat-track"><i style="width:${item.stats[key] / 255 * 100}%;--type-color:${colors[item.types[0]]}"></i></span><strong>${item.stats[key]}</strong></div>`).join('');
   }
-  function orderTable(orders, showOwner = false) {
-    if (!orders.length) return '<p class="empty-state">暂时没有工单。去看板接一单，让旧物继续发光。</p>';
-    return `<div class="table-wrap"><table><thead><tr><th>送修物品 / 工单号</th>${showOwner ? '<th>负责人</th>' : ''}<th>当前状态</th><th>更新时间</th><th></th></tr></thead><tbody>${orders.map(order => `<tr><td><div class="table-item">${itemIcon(order.kind)}<div>${escape(order.item)}<br><span class="order-code">${escape(order.id)}</span></div></div></td>${showOwner ? `<td>${escape(owner(order)?.name || '待接单')}</td>` : ''}<td>${pill(order)}</td><td class="muted">${time(order.updatedAt, true)}</td><td><button class="text-button" data-order="${escape(order.id)}">查看 →</button></td></tr>`).join('')}</tbody></table></div>`;
-  }
-  function stockRow(part) { return `<div class="stock-row">${itemIcon('box')}<div><span class="stock-name">${escape(part.name)}</span><span class="stock-spec">${escape(part.spec)}</span></div><span class="stock-number">${part.stock}<small>${escape(part.unit)}</small></span></div>`; }
-  function dashboard() {
-    return heading('维修工作台', `你好，${me().name}。让每一件送修物品，都有着落。`, newButton()) + stats() + boardSection() + `<div class="lower-grid"><section class="panel"><div class="section-head"><div class="section-title"><h2>我的工单</h2><span class="section-meta">${mine().length} 单由我负责</span></div><button class="text-button" data-view="mine">查看全部 →</button></div>${orderTable(mine().slice(0, 3))}</section><section class="panel"><div class="section-head"><h2>配件余量</h2><button class="text-button" data-view="inventory">进入台账 →</button></div>${snapshot.parts.map(stockRow).join('')}</section></div>`;
-  }
-  function movementTable() {
-    if (!snapshot.movements.length) return '<p class="empty-state">还没有配件流转记录。入库、领用或归还后，会自动记在这里。</p>';
-    return `<div class="table-wrap"><table><thead><tr><th>时间</th><th>配件 / 规格</th><th>操作</th><th>数量</th><th>关联工单</th><th>经办人</th></tr></thead><tbody>${snapshot.movements.map(row => { const part = snapshot.parts.find(item => item.id === row.partId); return `<tr><td>${time(row.time, true)}</td><td>${escape(part.name)} <span class="muted">${escape(part.spec)}</span></td><td>${{ in: '入库', out: '领用', return: '归还' }[row.type]}</td><td>${row.quantity} ${escape(part.unit)}</td><td class="order-code">${escape(row.orderId || '—')}</td><td>${escape(snapshot.users.find(user => user.id === row.actorId)?.name || '—')}</td></tr>`; }).join('')}</tbody></table></div>`;
-  }
-  function inventory() {
-    return heading('配件台账', '按名称与规格选配件。每一次领用、归还，都留下一笔记录。') + `<div class="inventory-grid">${snapshot.parts.map(part => `<section class="inventory-card">${stockRow(part)}<p class="muted" style="font-size:11px">期初 ${part.initial} ${escape(part.unit)} · 当前可用 ${part.stock} ${escape(part.unit)}</p><div class="heading-actions">${isCaptain() ? `<button class="button secondary small" data-stock="${part.id}" data-type="in">＋ 入库</button>` : ''}<button class="button secondary small" data-stock="${part.id}" data-type="out">领用 / 归还</button></div></section>`).join('')}</div><section class="panel"><div class="section-head"><h2>配件流转记录</h2><span class="section-meta">${snapshot.movements.length} 笔记录</span></div>${movementTable()}</section>`;
-  }
-  function captain() {
-    const weekly = thisWeek(snapshot.orders), assigned = weekly.filter(order => order.ownerId);
-    const groups = ['电工组', '焊工组', '综合组'];
-    return heading('队长后台', '把工单安排妥当，把每个人的付出记下来。', `<button class="button secondary" data-export="orders">${icon('download')}本周工单</button><button class="button secondary" data-export="parts">${icon('download')}本周耗材</button>`) + stats() + `<div class="lower-grid"><section class="panel"><div class="section-head"><h2>各组本周工作量</h2><span class="section-meta">按送修时间统计已接工单</span></div>${groups.map(group => { const count = assigned.filter(order => order.group === group).length; return `<div class="workload-row"><span>${group}</span><div class="bar-track"><div class="bar-fill" style="width:${assigned.length ? count / assigned.length * 100 : 0}%"></div></div><span>${count} 单</span></div>`; }).join('')}<p class="form-note" style="margin-top:12px">${weekly.filter(order => order.status === 'pending').length} 单还未接单，可在工单详情中指定负责人。</p></section><section class="panel"><div class="section-head"><h2>配件盘点</h2><button class="text-button" data-view="inventory">登记入库 →</button></div>${snapshot.parts.map(stockRow).join('')}</section></div><section class="panel" style="margin-top:20px"><div class="section-head"><h2>队员本周接单情况</h2><span class="section-meta">12 名演示队员，无排名</span></div><div class="table-wrap"><table><thead><tr><th>队员</th><th>小组</th><th>已接工单</th><th>已修好</th><th>维修中 / 待配件</th></tr></thead><tbody>${snapshot.users.map(user => { const orders = weekly.filter(order => order.ownerId === user.id); return `<tr><td>${escape(user.name)}${user.role === 'captain' ? ' · 队长' : ''}</td><td>${groupTag(user.group)}</td><td>${orders.length}</td><td>${orders.filter(order => order.status === 'done').length}</td><td>${orders.filter(order => ['active', 'parts'].includes(order.status)).length}</td></tr>`; }).join('')}</tbody></table></div></section>`;
-  }
-  async function render() {
-    snapshot = await store.getSnapshot();
-    const loggedIn = !!snapshot.currentUser;
-    $('#login-screen').hidden = loggedIn;
-    $('#app-shell').hidden = !loggedIn;
-    if (!loggedIn) {
-      $('#login-user').innerHTML = snapshot.users.map(user => `<option value="${user.id}">${escape(user.name)} · ${user.role === 'captain' ? '队长' : user.group}</option>`).join('');
-      return;
-    }
-    if (view === 'captain' && !isCaptain()) view = 'dashboard';
-    $('#captain-nav').hidden = !isCaptain();
-    $('#account-avatar').textContent = me().name.slice(-1);
-    $('#account-name').textContent = `${me().name} · ${isCaptain() ? '队长' : '队员'}`;
-    $('#nav-pending').textContent = snapshot.orders.filter(order => order.status === 'pending').length;
-    $('#breadcrumb-current').textContent = views[view];
-    document.querySelectorAll('.nav-item').forEach(button => { button.classList.toggle('active', button.dataset.view === view); if (button.dataset.view === view) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
-    const pages = { dashboard, orders: () => heading('工单看板', '从待接单到已修好，每一步都有人负责。', newButton()) + boardSection(), inventory, mine: () => heading('我的工单', `${me().name} · ${me().group}，这里是你负责的 ${mine().length} 张工单。`, `<button class="button secondary" data-view="orders">去看板接单 →</button>`) + `<section class="panel">${orderTable(mine())}</section>`, captain };
-    $('#main-content').innerHTML = pages[view]();
-  }
-  function openOrderForm() {
-    $('#order-form').reset(); $('#order-error').textContent = '';
-    const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-    $('#received-at').value = date.toISOString().slice(0, 16);
-    $('#order-dialog').showModal();
-  }
+  function multiplierClass(value) { return value > 1 ? 'weak' : value < 1 ? 'resist' : 'neutral'; }
   function openDetail(id) {
-    const order = snapshot.orders.find(item => item.id === id);
-    if (!order) return;
-    const person = owner(order);
-    $('#detail-content').innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">${escape(order.id)}</span><h2>${escape(order.item)} ${pill(order)}</h2></div><button class="icon-button" data-close="detail-dialog" aria-label="关闭工单详情">×</button></div><dl class="detail-meta"><div><dt>送修人</dt><dd>${escape(order.customer)}</dd></div><div><dt>联系方式</dt><dd>${escape(order.contact)}</dd></div><div><dt>负责人 / 维修组</dt><dd>${escape(person?.name || '暂未接单')} · ${escape(order.group)}</dd></div><div><dt>送修时间</dt><dd>${time(order.receivedAt, true)}</dd></div></dl><p class="detail-description">${escape(order.description)}</p><div class="detail-action-row">${order.status === 'pending' ? `<button class="button primary small" data-claim="${escape(id)}">由我接单 →</button>` : ''}${editable(order) && order.ownerId ? `<button class="button secondary small" data-material-order="${escape(id)}">${icon('box')}登记领料 / 归还</button>` : ''}</div>${isCaptain() && order.status !== 'done' ? `<section class="detail-section"><h3>指定负责人</h3><form id="assign-form" class="inline-form" data-id="${escape(id)}"><select name="ownerId" aria-label="选择负责人">${snapshot.users.map(user => `<option value="${user.id}" ${order.ownerId === user.id ? 'selected' : ''}>${escape(user.name)} · ${escape(user.group)}</option>`).join('')}</select><button type="submit" class="button secondary">派单</button></form></section>` : ''}${editable(order) && order.ownerId ? `<section class="detail-section"><h3>更新维修进度</h3><form id="status-form" class="inline-form" data-id="${escape(id)}"><select name="status" aria-label="维修状态">${['active', 'parts', 'done'].map(status => `<option value="${status}" ${order.status === status ? 'selected' : ''}>${statusNames[status]}</option>`).join('')}</select><button type="submit" class="button primary">更新进度</button><input name="note" placeholder="本次维修备注（选填，最多 200 字）" maxlength="200" aria-label="维修备注"></form></section>` : ''}<section class="detail-section"><h3>进度时间线</h3><ol class="timeline">${[...order.history].reverse().map(row => `<li><p>${escape(row.text)}</p><small>${time(row.time, true)} · ${escape(row.actor)}</small></li>`).join('')}</ol></section>`;
+    const item = byId(id); if (!item) return;
+    $('#detail-content').dataset.id = item.id;
+    const evolution = catalog.pokemon.filter(other => other.id === item.evolvesFrom || other.evolvesFrom === item.id);
+    const special = rules.defenseProfile(item, catalog.types).filter(row => row.value !== 1);
+    $('#detail-content').innerHTML = `<button class="close-button" data-close="detail-dialog" aria-label="关闭详情">×</button><div class="detail-layout"><div class="detail-visual" style="--type-color:${colors[item.types[0]]}"><span class="number">${number(item.id)}</span>${artwork(item, 'detail-art')}<span class="detail-genus">${escape(item.genus)}</span></div><div class="detail-info"><span class="eyebrow">NICE TO MEET YOU</span><h2>${escape(item.name)}</h2><p class="english-name">${escape(item.slug)}</p><div class="card-types">${item.types.map(typePill).join('')}</div><div class="physical-stats"><div><small>身高</small><strong>${item.height} <span>m</span></strong></div><div><small>体重</small><strong>${item.weight} <span>kg</span></strong></div><div><small>能力总和</small><strong>${item.total}</strong></div></div><h3>六项基础能力</h3>${statBars(item)}<p class="helper">基础值用于比较角色设定，不是具体等级的实战能力。</p><div class="detail-actions"><button class="button orange" data-action="add" data-id="${item.id}" ${draft.includes(item.id) ? 'disabled' : ''}>${draft.includes(item.id) ? '已在队伍中' : '＋ 加入队伍'}</button><button class="button outline" data-action="favorite" data-id="${item.id}">${profile.favorites.includes(item.id) ? '♥ 已收藏' : '♡ 收藏'}</button><button class="button outline" data-action="compare" data-id="${item.id}">${compareIds.includes(item.id) ? '✓ 已选对比' : '⇄ 对比'}</button></div></div></div><div class="detail-bottom"><h3>受到这些属性攻击时</h3><p class="helper">双属性倍率相乘，0 表示属性无效，未列出的属性为 ×1。</p><div class="matchup-list">${special.map(row => `<span class="matchup ${multiplierClass(row.value)}">${typePill(row.id)}<strong>×${row.value}</strong></span>`).join('')}</div>${evolution.length ? `<h3 class="evolution-title">相邻的进化伙伴</h3><div class="evolution-links">${evolution.map(other => `<button data-action="detail" data-id="${other.id}">${artwork(other, '', true)}<span>${number(other.id)} ${escape(other.name)}</span> ↗</button>`).join('')}</div>` : ''}<a class="source-link" href="https://pokeapi.co/api/v2/pokemon/${item.id}/" target="_blank" rel="noopener noreferrer">查看公开资料来源 ↗</a></div>`;
     if (!$('#detail-dialog').open) $('#detail-dialog').showModal();
   }
-  function stockOrders(type) { return snapshot.orders.filter(order => order.ownerId && editable(order) && (type === 'return' || order.status !== 'done')); }
-  function refreshStockOrders(preferred) {
-    const form = $('#stock-form'), type = form.elements.type.value;
-    const select = form.elements.orderId;
-    select.innerHTML = stockOrders(type).map(order => `<option value="${escape(order.id)}" ${order.id === preferred ? 'selected' : ''}>${escape(order.item)} · ${escape(order.id)}</option>`).join('') || '<option value="">暂无可操作的工单</option>';
-    $('#stock-order-field').hidden = type === 'in';
-    select.required = type !== 'in';
-    select.disabled = type === 'in';
+  function compareTray() {
+    const tray = $('#compare-tray'); tray.hidden = !compareIds.length;
+    tray.innerHTML = `<span class="tray-title">能力对比 <small>${compareIds.length}/3</small></span><div class="tray-members">${compareIds.map(id => `<button data-action="compare" data-id="${id}" aria-label="移除${escape(byId(id).name)}的对比">${artwork(byId(id), '', true)}<span>${escape(byId(id).name)}</span><b>×</b></button>`).join('')}</div><button class="button dark small" data-action="open-compare" ${compareIds.length < 2 ? 'disabled' : ''}>开始对比 ↗</button><button class="text-button" data-action="clear-compare">清空</button>`;
+    document.body.classList.toggle('has-compare', compareIds.length > 0);
   }
-  function openStock(partId, type = 'out', orderId = '') {
-    $('#stock-content').innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">PARTS LEDGER</span><h2 id="stock-title">登记配件流转</h2></div><button class="icon-button" data-close="stock-dialog" aria-label="关闭配件窗口">×</button></div><form id="stock-form"><label for="stock-part">配件 / 规格</label><select id="stock-part" name="partId">${snapshot.parts.map(part => `<option value="${part.id}" ${part.id === partId ? 'selected' : ''}>${escape(part.name)} · ${escape(part.spec)}（余 ${part.stock} ${escape(part.unit)}）</option>`).join('')}</select><label for="stock-type">操作</label><select id="stock-type" name="type">${isCaptain() ? `<option value="in" ${type === 'in' ? 'selected' : ''}>入库</option>` : ''}<option value="out" ${type === 'out' ? 'selected' : ''}>领用</option><option value="return" ${type === 'return' ? 'selected' : ''}>归还</option></select><div id="stock-order-field"><label for="stock-order">关联工单</label><select id="stock-order" name="orderId"></select></div><label for="stock-quantity">数量（按配件单位计）</label><input id="stock-quantity" name="quantity" type="number" min="1" step="1" value="1" required><p class="form-note">领用自动扣减库存；归还不能超过该工单尚未归还的领用量。</p><p class="form-error" id="stock-error" role="alert"></p><div class="dialog-actions"><button class="button secondary" type="button" data-close="stock-dialog">取消</button><button class="button primary" type="submit">保存记录</button></div></form>`;
-    refreshStockOrders(orderId);
-    $('#stock-dialog').showModal();
+  function openCompare() {
+    if (compareIds.length < 2) return toast('至少选择两只伙伴进行对比。');
+    const members = compareIds.map(byId);
+    $('#compare-content').innerHTML = `<button class="close-button" data-close="compare-dialog" aria-label="关闭对比">×</button><div class="dialog-heading"><span class="eyebrow">SAME WORLD, DIFFERENT STRENGTHS</span><h2>看看它们，各自擅长什么。</h2><p>基础能力横向比较；条形长度使用同一标尺。</p></div><div class="comparison-grid" style="--columns:${members.length}">${members.map(item => `<section class="comparison-column"><div class="comparison-art" style="--type-color:${colors[item.types[0]]}">${artwork(item, '', true)}</div><span class="number">${number(item.id)}</span><h3>${escape(item.name)}</h3><div class="card-types">${item.types.map(typePill).join('')}</div><p class="compare-physical">${item.height} m · ${item.weight} kg</p>${statBars(item)}<div class="compare-total">能力总和 <strong>${item.total}</strong></div></section>`).join('')}</div><p class="helper comparison-note">不同能力各有作用，能力总和不能直接代表战斗胜率。</p>`;
+    if (!$('#compare-dialog').open) $('#compare-dialog').showModal();
   }
-  function downloadCSV(kind) {
-    if (!isCaptain()) throw new Error('导出需要队长权限。');
-    let rows;
-    if (kind === 'orders') {
-      rows = [['工单号', '物品', '故障描述', '送修人', '联系方式', '维修组', '负责人', '状态', '送修时间', '更新时间'], ...thisWeek(snapshot.orders).map(order => [order.id, order.item, order.description, order.customer, order.contact, order.group, owner(order)?.name || '', statusNames[order.status], new Date(order.receivedAt).toLocaleString('zh-CN'), new Date(order.updatedAt).toLocaleString('zh-CN')])];
-    } else {
-      rows = [['配件', '规格', '单位', '本周领用', '本周归还', '本周净消耗', '本周入库', '当前余量'], ...snapshot.parts.map(part => { const movements = thisWeek(snapshot.movements).filter(row => row.partId === part.id); const total = type => movements.filter(row => row.type === type).reduce((sum, row) => sum + row.quantity, 0); return [part.name, part.spec, part.unit, total('out'), total('return'), total('out') - total('return'), total('in'), part.stock]; })];
-    }
-    const csvCell = value => { const text = String(value ?? ''); const safe = /^[\s]*[=+@-]/.test(text) ? `'${text}` : text; return `"${safe.replace(/"/g, '""')}"`; };
-    const csv = '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = url; link.download = `星火-${kind === 'orders' ? '本周工单' : '本周配件消耗'}-${new Date().toLocaleDateString('sv-SE')}.csv`;
-    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast('已导出 CSV，可用 Excel 打开。');
+  function analysisHtml() {
+    const members = draft.map(byId), analysis = rules.analyzeTeam(members, catalog.types);
+    const threats = [...analysis.defense].filter(row => row.weak).sort((a, b) => b.weak - a.weak);
+    return `<div class="analysis-grid"><section class="panel"><span class="eyebrow">TYPE MIX</span><h3>成员属性分布</h3><p class="helper">双属性成员在两种属性中分别计数。</p><div class="type-distribution">${analysis.distribution.map(row => `<div>${typePill(row.id)}<span class="distribution-bar"><i style="width:${row.count / 6 * 100}%;background:${colors[row.id]}"></i></span><strong>${row.count}</strong></div>`).join('') || '<p class="helper">加入伙伴后展示属性分布。</p>'}</div></section><section class="panel"><span class="eyebrow">DEFENSE CHECK</span><h3>一起看看，共同弱点。</h3><p class="helper">“弱点”表示受到该属性攻击时倍率大于 1。</p><div class="threat-list">${threats.slice(0, 6).map(row => `<div>${typePill(row.id)}<span><strong>${row.weak}</strong> 位较弱</span><small>${row.resist} 位抵抗${row.immune ? ` · ${row.immune} 位无效` : ''}</small></div>`).join('') || '<p class="helper">加入伙伴后，检查哪些属性会影响多人。</p>'}</div><p class="helper analysis-note">只分析属性与基础值；未计入招式、特性、等级或战斗策略。</p></section></div>`;
+  }
+  function budgetHtml(members) {
+    const budget = rules.teamBudget(members);
+    return `<div class="team-budget ${budget.valid ? '' : 'over-budget'}" aria-label="配队预算">
+      <div class="budget-heading"><div><span class="eyebrow">A LITTLE LIMIT, MORE POSSIBILITIES</span><h3>配队预算 <strong>${budget.used}<small> / ${budget.limit} 点</small></strong></h3></div>
+      <span class="budget-balance">${budget.valid ? `剩余 <strong>${budget.remaining}</strong> 点` : `超出 <strong>${budget.over}</strong> 点`}</span></div>
+      <div class="budget-track" role="progressbar" aria-label="已使用配队预算" aria-valuemin="0" aria-valuemax="${budget.limit}" aria-valuenow="${Math.min(budget.used, budget.limit)}" aria-valuetext="已用 ${budget.used} 点，上限 ${budget.limit} 点"><i style="width:${Math.min(budget.used / budget.limit * 100, 100)}%"></i></div>
+      <p class="helper">每位伙伴的成本 = 六项基础能力之和。3000 点是本项目自定的搭配规则。</p>
+      ${!budget.valid ? '<p class="budget-warning" role="alert">这支旧队伍超过新预算，记录仍然保留。移除或替换成员后即可保存修改。</p>' : ''}
+    </div>`;
+  }
+  function rosterHtml(ids) {
+    return `<div class="saved-members">${ids.map(id => `<span title="${escape(byId(id).name)} · ${byId(id).total} 点">${artwork(byId(id), '', false)}</span>`).join('')}</div>`;
+  }
+  function savedTeamsHtml() {
+    const heading = `<div class="section-heading"><div><span class="eyebrow">YOUR TEAM NOTEBOOK</span><h2>我保存的队伍</h2></div><span class="result-count">${profile.teams.length} / 8 支</span></div>`;
+    if (!user) return `<section class="saved-teams">${heading}${empty('给你的队伍一个家。', '登录后，保存搭配与笔记。', '<button class="button orange" data-action="account">登录 / 注册 ↗</button>')}</section>`;
+    if (!profile.teams.length) return `<section class="saved-teams">${heading}${empty('第一支队伍，从这里出发。', '先从图鉴加入伙伴，再给队伍起一个名字。')}</section>`;
+    return `<section class="saved-teams">${heading}<div class="saved-team-grid">${profile.teams.map(saved => {
+      const budget = rules.teamBudget(saved.members.map(byId));
+      return `<article class="saved-team-card"><div><h3>${escape(saved.name)}</h3><span class="helper">${new Date(saved.updatedAt).toLocaleDateString('zh-CN')}</span></div>
+        <div class="roster-meta"><span>我的记录 · ${saved.members.length}/6 位</span><strong class="${budget.valid ? '' : 'danger-text'}">${budget.used} / ${budget.limit} 点${budget.valid ? '' : ' · 超预算'}</strong></div>
+        ${rosterHtml(saved.members)}<p>${escape(saved.note || '还没有搭配笔记。')}</p><div class="roster-actions"><button class="text-button" data-action="load-team" data-id="${escape(saved.id)}">继续编辑 ↗</button><button class="text-button" data-action="compare-team" data-kind="saved" data-id="${escape(saved.id)}" ${draft.length ? '' : 'disabled'}>与当前搭配对比 ⇄</button><button class="text-button danger-text" data-action="delete-team" data-id="${escape(saved.id)}">删除</button></div></article>`;
+    }).join('')}</div></section>`;
+  }
+  function challengesHtml() {
+    return `<section class="challenge-section"><div class="section-heading"><div><span class="eyebrow">AUTHOR-CREATED CHALLENGES</span><h2>预设挑战队伍</h2></div><span class="reference-badge">作者设计 · 静态参考</span></div>
+      <p class="section-intro">${draft.length ? '挑一支队伍，与正在编辑的搭配比较；也可以用它作为起点，尝试自己的调整。' : '先从图鉴加入伙伴，再与参考队伍对比；也可以用下方组合开始搭配。'}这些组合由作者依据公开角色资料设计。</p>
+      <div class="saved-team-grid">${challenges.map(preset => {
+        const budget = rules.teamBudget(preset.members.map(byId));
+        return `<article class="saved-team-card challenge-card"><div><h3>${escape(preset.name)}</h3><span class="reference-badge">作者预设</span></div><div class="roster-meta"><span>${escape(preset.tagline)}</span><strong>${budget.used} / ${budget.limit} 点</strong></div>
+          ${rosterHtml(preset.members)}<p>${escape(preset.note)}</p><div class="roster-actions"><button class="button outline small" data-action="compare-team" data-kind="preset" data-id="${escape(preset.id)}" ${draft.length ? '' : 'disabled'}>与当前搭配对比 ⇄</button><button class="text-button" data-action="use-challenge" data-id="${escape(preset.id)}">用这支队伍开始 ↗</button></div></article>`;
+      }).join('')}</div></section>`;
+  }
+  function comparisonTeamHtml(name, source, members, analysis, side) {
+    return `<article class="duel-team ${side}"><div class="duel-team-heading"><span class="eyebrow">${source}</span><h3>${escape(name)}</h3></div>
+      <div class="duel-numbers"><div><small>成员</small><strong>${members.length}<span> / 6 位</span></strong></div><div><small>配队成本</small><strong>${analysis.budget.used}<span> 点</span></strong></div><div><small>${analysis.budget.valid ? '剩余预算' : '超出预算'}</small><strong>${analysis.budget.valid ? analysis.budget.remaining : analysis.budget.over}<span> 点</span></strong></div></div>
+      ${rosterHtml(members.map(item => item.id))}<h4>平均基础能力</h4>
+      ${rules.statKeys.map(key => `<div class="stat-row"><span>${labels[key]}</span><span class="stat-track"><i style="width:${analysis.averages[key] / 255 * 100}%;--type-color:${side === 'current' ? colors.water : colors.fire}"></i></span><strong>${analysis.averages[key]}</strong></div>`).join('')}
+      <h4>成员属性分布</h4><div class="duel-type-tags">${analysis.distribution.map(row => `<span>${typePill(row.id)}<b>×${row.count}</b></span>`).join('')}</div></article>`;
+  }
+  function teamComparisonHtml() {
+    const target = opponentChoice && (opponentChoice.kind === 'preset' ? challenges : profile.teams).find(item => item.id === opponentChoice.id);
+    const options = (items, kind) => items.map(item => `<option value="${kind}:${escape(item.id)}" ${target && opponentChoice.kind === kind && target.id === item.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('');
+    const heading = `<div class="section-heading"><div><span class="eyebrow">COMPARE IDEAS, FIND YOUR BALANCE</span><h2>队伍对比</h2></div><label class="opponent-select">参考队伍<select id="team-opponent" aria-label="选择对比队伍"><option value="">选择一支参考队伍</option><optgroup label="作者预设">${options(challenges, 'preset')}</optgroup>${profile.teams.length ? `<optgroup label="我保存的队伍">${options(profile.teams, 'saved')}</optgroup>` : ''}</select></label></div>`;
+    if (!target || !draft.length) return `<section id="team-comparison" class="team-comparison" tabindex="-1">${heading}${empty(draft.length ? '看看另一种搭配思路。' : '先让一位伙伴加入队伍。', draft.length ? '从预设挑战队伍或你的保存记录中，选择一支来比较。' : '添加成员后，就能对比预算、平均能力和属性关系。')}</section>`;
+    const members = draft.map(byId), opponents = target.members.map(byId);
+    const left = rules.analyzeTeam(members, catalog.types), right = rules.analyzeTeam(opponents, catalog.types);
+    return `<section id="team-comparison" class="team-comparison" tabindex="-1">${heading}
+      <p class="comparison-explainer">对比对象是${opponentChoice.kind === 'preset' ? '作者设计的静态参考组合' : '当前账号保存的队伍'}。${members.length !== opponents.length ? '双方成员数量不同，请结合人数和平均值阅读。' : ''}成本与基础值帮助理解取舍，属性分析未计入招式、特性或等级。</p>
+      <div class="team-duel-grid">${comparisonTeamHtml(teamMeta.name || '当前搭配', 'YOUR CURRENT TEAM · 正在编辑', members, left, 'current')}${comparisonTeamHtml(target.name, opponentChoice.kind === 'preset' ? 'AUTHOR PRESET · 作者预设' : 'YOUR SAVED TEAM · 我的记录', opponents, right, 'reference')}</div>
+      <details class="defense-comparison"><summary>查看 18 类属性的弱点与抵抗人数 <span>展开对照 ↓</span></summary><p class="helper">弱点：受到该属性攻击时倍率大于 1；抵抗：倍率小于 1，包含属性无效。每格为“弱点人数 / 抵抗人数”。</p><div class="table-wrap"><table><thead><tr><th>受到的攻击属性</th><th>当前搭配 · ${members.length} 位</th><th>${escape(target.name)} · ${opponents.length} 位</th></tr></thead><tbody>${left.defense.map((row, index) => `<tr><td>${typePill(row.id)}</td><td><strong class="weak-count">${row.weak}</strong> / <span class="resist-count">${row.resist}</span></td><td><strong class="weak-count">${right.defense[index].weak}</strong> / <span class="resist-count">${right.defense[index].resist}</span></td></tr>`).join('')}</tbody></table></div></details></section>`;
+  }
+  function starterChallengeHtml(members) {
+    const result = rules.starterChallenge(members, catalog.types);
+    const completed = Object.values(result.checks).filter(Boolean).length;
+    const criteria = [
+      ['members', '六个位置都有伙伴', `${result.memberCount} / ${result.targetMembers} 位`],
+      ['budget', '成本在预算以内', `${result.budget.used} / ${result.budget.limit} 点`],
+      ['electric', '电系弱点不集中', `${result.electricWeakMembers.length} 位 · 上限 ${result.maxElectricWeak} 位`]
+    ];
+    const weakNames = result.electricWeakMembers.map(member => `${escape(member.name)} ×${member.value}`).join('、');
+    return `<section class="starter-challenge ${result.complete ? 'is-complete' : ''}" aria-labelledby="starter-title">
+      <div class="starter-heading"><div><span class="eyebrow">YOUR FIRST TEAM CHALLENGE</span><h2 id="starter-title">初次配队 · 留意电系弱点</h2></div><span class="challenge-status">${result.complete ? '✓ 任务达成' : members.length ? `达成 ${completed} / 3 项` : '等待开始'}</span></div>
+      <p class="starter-intro">选 ${result.targetMembers} 位伙伴，总成本不超过 ${result.budget.limit} 点，让电系弱点成员不多于 ${result.maxElectricWeak} 位。</p>
+      <ul class="starter-checks">${criteria.map(([key, title, value]) => `<li class="${result.checks[key] ? 'is-met' : ''}"><span class="check-icon" aria-hidden="true">${result.checks[key] ? '✓' : '○'}</span><div><strong>${title}</strong><span>${value}</span><small>${members.length ? result.checks[key] ? '已满足' : '待调整' : '等待添加伙伴'}</small></div></li>`).join('')}</ul>
+      <div class="starter-feedback">${members.length ? `<p><strong>${result.complete ? '做到了！' : '观察一下：'}</strong>${result.complete ? '你已经兼顾了人数、成本与电系弱点。想一想，是哪些成员的属性帮助了你？' : !result.checks.members ? `再找 ${Math.max(0, result.targetMembers - result.memberCount)} 位伙伴，继续观察预算和弱点人数。` : !result.checks.budget ? '当前成本超过预算，先移除或替换一位伙伴。' : '电系弱点集中，试着检查一位成员的属性，再考虑替换。'}</p><p>当前电系弱点成员：${weakNames || '无'}。倍率大于 1 才计为弱点，属性无效不计入。</p>` : '<p>从喜欢的伙伴开始，也可以载入下方的预设队伍，再尝试自己的调整。</p>'}</div>
+      <div class="starter-actions"><button class="text-button" data-view="dex">去图鉴挑选伙伴 ↗</button><button class="text-button" data-view="lab">去属性实验室验证 ↗</button><span class="helper">按当前搭配实时检查，完成后可登录保存队伍。</span></div>
+    </section>`;
+  }
+  function team() {
+    const members = draft.map(byId), budget = rules.teamBudget(members);
+    return heroTitle('A BUDGET, A TEAM, YOUR OWN CHOICES', '3000 点，搭出你的选择。', '在有限预算里安排六个位置，再和参考队伍比较，发现不同组合的取舍。') + beginnerGuideHtml() + starterChallengeHtml(members) + `<section class="team-builder"><div class="section-heading"><h2>正在搭配 <span class="muted">${draft.length}/6</span></h2><button class="text-button" data-action="new-team">新建 / 清空编辑</button></div>${budgetHtml(members)}<div class="team-slots">${Array.from({ length: 6 }, (_, index) => {
+      const item = byId(draft[index]);
+      return item ? `<div class="team-slot filled" style="--type-color:${colors[item.types[0]]}"><button class="slot-remove" data-action="remove-member" data-id="${item.id}" aria-label="移除${escape(item.name)}">×</button><button class="slot-detail" data-action="detail" data-id="${item.id}">${artwork(item, '', true)}<strong>${escape(item.name)}</strong><span>${item.types.map(typePill).join('')}</span><small class="slot-cost">${item.total} 点</small></button></div>` : `<button class="team-slot empty-slot" data-view="dex"><small>0${index + 1}</small><span>＋</span><strong>发现下一位伙伴</strong></button>`;
+    }).join('')}</div><form id="team-form" class="team-form"><label>队伍名称<input name="name" value="${escape(teamMeta.name)}" maxlength="30" placeholder="例如：我的第一支队伍" required></label><label class="team-note">搭配笔记<input name="note" value="${escape(teamMeta.note)}" maxlength="200" placeholder="为什么选择这几位伙伴？（选填）"></label><button class="button orange" type="submit" ${members.length && budget.valid ? '' : 'disabled'}>${teamMeta.id ? '保存修改' : '保存队伍'} ↗</button></form>${user ? '<p class="helper">最多保存 8 支队伍；每支 1—6 位成员，总成本不超过 3000 点。</p>' : '<p class="helper">预算搭配与对比可以直接体验，登录后可保存队伍。未保存的搭配在刷新后清空。</p>'}</section>${analysisHtml()}${savedTeamsHtml()}${challengesHtml()}${teamComparisonHtml()}`;
+  }
+  function typeOptions(selected, optional = false) { return `${optional ? '<option value="">无第二属性</option>' : ''}${catalog.types.map(type => `<option value="${type.id}" ${selected === type.id ? 'selected' : ''}>${escape(type.name)}</option>`).join('')}`; }
+  function labResult() {
+    if (!labLaunched) return '<div class="lab-ready"><strong>准备好，碰一下！</strong><p>选好属性与伙伴，就可以发射了。</p></div>';
+    const target = byId(labTargetId), result = rules.typeExperiment(attack, target.types, catalog.types);
+    const reactions = { weak: ['发现弱点！', result.value === 4 ? '哇，两种属性都怕这个！' : '哎呀，被发现弱点了！'], resist: ['轻松接住～', '这个我还挺擅长！'], neutral: ['稳稳接下这一次。', '打个招呼，刚刚好。'], immune: ['咦，刚才发生了什么？', '嘿嘿，这个对我无效～'] };
+    const [title, speech] = reactions[result.outcome];
+    return `<div class="lab-outcome ${result.outcome}"><strong>×${result.value}</strong><div><h3>${title}</h3><p>${escape(target.name)}：${speech}</p></div></div>`;
+  }
+  function labArenaHtml() {
+    const target = byId(labTargetId), result = rules.typeExperiment(attack, target.types, catalog.types);
+    return `<div class="lab-arena" id="lab-arena" data-attack="${attack}" data-outcome="${labLaunched ? result.outcome : 'ready'}" style="--element-color:${colors[attack]};--target-color:${colors[target.types[0]]}">
+      <span class="lab-arena-label">小小碰撞 · 自由实验</span><div class="lab-stage">
+      <div class="lab-source"><div class="lab-buddy" aria-hidden="true"><i class="buddy-eye left"></i><i class="buddy-eye right"></i><i class="buddy-mouth"></i><i class="buddy-cheek left"></i><i class="buddy-cheek right"></i></div><strong>${escape(typeName(attack))}属性小精灵</strong></div>
+      <div class="lab-projectile" aria-hidden="true"></div><div class="lab-target"><span class="lab-speech" aria-hidden="true">${result.outcome === 'immune' ? '没事没事～' : result.outcome === 'resist' ? '接住啦！' : result.outcome === 'weak' ? '哎呀！' : '你好呀～'}</span><span class="lab-target-shadow" aria-hidden="true"></span><img class="lab-target-art" src="${escape(target.image)}" alt="${escape(target.name)}" width="475" height="475" decoding="async"><div class="lab-shield" aria-hidden="true"></div><div class="lab-sparks" aria-hidden="true">${Array.from({ length: 6 }, (_, index) => `<i style="--spark-angle:${index * 60}deg"></i>`).join('')}</div><strong>${escape(target.name)}</strong><div class="lab-target-types">${target.types.map(typePill).join('')}</div></div></div></div>`;
+  }
+  function labCalculationHtml() {
+    if (!labLaunched) return '';
+    const target = byId(labTargetId), result = rules.typeExperiment(attack, target.types, catalog.types);
+    return `<details class="lab-calculation"><summary>看看这次的计算</summary><p>${result.defenses.map((type, index) => `${escape(typeName(attack))} → ${escape(typeName(type))}：×${result.factors[index]}`).join('；')}</p><p><strong>${result.factors.join(' × ')} = ${result.value}</strong></p><p>每次使用一种攻击属性，目标的单／双属性由图鉴资料自动读取。这里只展示属性倍率，不计算伤害点数。</p></details>`;
+  }
+  function updateLab() {
+    if (!$('#lab-arena-mount')) return;
+    window.PokeLabEffects.stop();
+    $('#attack-type').value = attack; $('#lab-target').value = labTargetId;
+    $('#lab-arena-mount').innerHTML = labArenaHtml();
+    $('#lab-result').innerHTML = labResult();
+    $('#lab-calculation').innerHTML = labCalculationHtml();
+    $('#lab-fire').textContent = labLaunched ? '再发射一次 ✦' : '发射一次 ✦';
+  }
+  async function launchLab() {
+    labLaunched = true; updateLab();
+    await window.PokeLabEffects.play($('#lab-arena'));
+  }
+  function quizHtml() {
+    if (!quiz) return `<div class="practice-start"><span class="practice-icon">✧</span><h3>五道题，试试你的属性直觉。</h3><p>每题选一个倍率，答完立即解释。${user ? '完成后保存到你的账号。' : '访客也能练习；登录后可保存成绩。'}</p><button class="button dark" data-action="start-quiz">开始属性练习 ↗</button></div>`;
+    if (quiz.index === 5) return `<div class="practice-start"><span class="practice-icon">✧</span><h3>发现完成：${quiz.score} / 5</h3><p>${quiz.saved ? '本次成绩已保存到当前账号。' : '访客成绩不会保存。'}</p><button class="button dark" data-action="start-quiz">再来五道题 ↗</button></div>`;
+    const question = quiz.questions[quiz.index];
+    return `<div class="quiz-heading"><span class="eyebrow">QUESTION 0${quiz.index + 1} / 05</span><span>${quiz.score} 题正确</span></div><h3 class="quiz-question">${typePill(question.attack)}攻击 ${typePill(question.defense)}，属性倍率是多少？</h3><div class="quiz-answers">${[0, 0.5, 1, 2].map(value => `<button data-action="quiz-answer" data-value="${value}" ${quiz.answered ? 'disabled' : ''} class="${quiz.answered && value === question.answer ? 'correct' : quiz.answered && value === quiz.choice ? 'incorrect' : ''}">×${value}</button>`).join('')}</div>${quiz.answered ? `<div class="quiz-feedback">${quiz.choice === question.answer ? '✓ 判断正确！' : `这次正确倍率是 ×${question.answer}。`} ${escape(typeName(question.attack))}攻击${escape(typeName(question.defense))}的倍率来自属性关系表。<button class="button dark small" data-action="quiz-next">${quiz.index === 4 ? '查看结果' : '下一题'} →</button></div>` : '<p class="helper">选一个倍率，答完会显示结果。</p>'}`;
+  }
+  function lab() {
+    return heroTitle('A LITTLE COLLISION, A NEW DISCOVERY', '小精灵，来碰一下！', '发射一种属性，让伙伴给你一点不一样的回应。') + `<div class="lab-grid collision-lab"><section class="panel lab-controls"><span class="eyebrow">PICK YOUR LITTLE ENCOUNTER</span><h2>安排这次碰面</h2><label>发射的属性<select id="attack-type">${typeOptions(attack)}</select></label><label>接招的伙伴<select id="lab-target">${catalog.pokemon.map(item => `<option value="${item.id}" ${item.id === labTargetId ? 'selected' : ''}>${number(item.id)} ${escape(item.name)}</option>`).join('')}</select></label><div class="lab-inspirations"><span class="helper">或者，一键试试这些组合</span><div class="example-buttons"><button data-action="example" data-example="fire">小火花 → 妙蛙种子</button><button data-action="example" data-example="water">小水泡 → 杰尼龟</button><button data-action="example" data-example="electric">电火花 → 穿山鼠</button><button data-action="example" data-example="ice">小冰晶 → 快龙</button></div></div></section><section class="panel lab-playground" aria-label="属性碰撞实验"><div id="lab-arena-mount">${labArenaHtml()}</div><div class="lab-launch-row"><button id="lab-fire" class="button orange" data-action="lab-fire">${labLaunched ? '再发射一次 ✦' : '发射一次 ✦'}</button></div><div class="collision-result" id="lab-result" role="status" aria-live="polite" aria-atomic="true">${labResult()}</div><div id="lab-calculation">${labCalculationHtml()}</div></section></div><section class="panel practice-panel"><div id="quiz-content">${quizHtml()}</div></section>${user && profile.practices.length ? `<section class="practice-history"><h3>我的最近练习</h3><div>${profile.practices.slice(0, 5).map(item => `<span>${new Date(item.time).toLocaleString('zh-CN')} <strong>${item.score}/5</strong></span>`).join('')}</div></section>` : ''}`;
+  }
+  function about() {
+    return heroTitle('OPEN DATA, HONEST DISCOVERY', '每一个发现，都有来处。', '这是一个公开资料驱动的前端课程项目。你可以查阅来源，也可以备份自己的探索记录。') + `<div class="about-grid"><section class="panel"><h2>这份图鉴的范围</h2><p>收录全国图鉴 001—151 的默认形态，包含中文名称、图片、身高体重、六项基础能力和常规属性关系。个人收藏、队伍和练习成绩都由你的实际操作产生。</p><div class="source-facts"><span><strong>151</strong>只宝可梦</span><span><strong>18</strong>种常规属性</span><span><strong>6</strong>项基础能力</span></div><p>“初代”表示收录范围。属性与数值采用数据快照中的现行规则，例如妖精属性也会出现在部分初代角色中。</p><p>资料整理日期：${new Date(catalog.meta.retrievedAt).toLocaleDateString('zh-CN')}。完整来源与校验记录保存在 source-manifest.json。</p><a class="source-link" href="assets/data/source-manifest.json" target="_blank" rel="noopener noreferrer">查看本地来源清单 ↗</a></section><section class="panel"><h2>理解这些数值</h2><p>身高从分米换算成米，体重从百克换算成千克。能力条显示基础值，同一标尺便于比较。</p><p>双属性防御倍率 = 攻击属性对第一属性的倍率 × 对第二属性的倍率。零倍率仍然是零。</p><p>队伍分析展示防御弱点与抵抗人数，抵抗统计包括属性无效的成员。它没有计入等级、招式、特性和其他战斗条件。</p><div class="source-links"><a href="https://pokeapi.co/docs/v2" target="_blank" rel="noopener noreferrer">PokéAPI 字段说明 ↗</a><a href="https://github.com/PokeAPI/pokeapi/tree/master/data/v2/csv" target="_blank" rel="noopener noreferrer">结构化资料仓库 ↗</a><a href="https://github.com/PokeAPI/sprites" target="_blank" rel="noopener noreferrer">图片资料仓库 ↗</a></div></section><section class="panel backup-panel"><h2>把你的发现，带在身边。</h2><p>个人记录保存在当前浏览器和地址下。JSON 备份包含收藏、队伍与练习记录，不包含账号密码。</p><div class="backup-actions"><button class="button dark" data-action="export">导出个人备份 ↓</button><label class="button outline file-button">导入个人备份 ↑<input id="import-file" type="file" accept=".json,application/json" aria-label="导入个人备份"></label></div><p class="helper">导入前会确认，导入内容将替换当前账号的个人记录。</p></section><section class="panel"><h2>关于这个发现室</h2><p>使用 HTML、CSS 和原生 JavaScript。图鉴可以直接浏览；登录后，不同本地账号拥有各自的个人记录。演示账号为 leaf / blue，密码 poke123。</p><p>这是课程学习作品，与 Pokémon 官方无关联。图片、角色及相关权利归各自权利人，公开资料来自 PokéAPI 社区。</p><p>AI 辅助生成初版；学习是否完成，需要通过本人阅读、独立修改和解释代码来体现。</p></section></div>`;
+  }
+  function render() {
+    window.PokeLabEffects.stop();
+    header();
+    $('#main').innerHTML = view === 'dex' ? dex() : view === 'favorites' ? favorites() : view === 'team' ? team() : view === 'lab' ? lab() : about();
+    updateGrid(); compareTray();
+  }
+  function openAccount(mode = 'login') {
+    const isRegister = mode === 'register';
+    $('#account-content').innerHTML = `<button class="close-button" data-close="account-dialog" aria-label="关闭账号窗口">×</button><div class="account-heading"><span class="brand-symbol" aria-hidden="true"><i></i></span><span class="eyebrow">YOUR OWN DISCOVERY ROOM</span><h2>${user ? `你好，${escape(user.name)}。` : isRegister ? '创建你的发现室。' : '欢迎，新的发现者。'}</h2><p>${user ? '收藏、队伍和练习记录保存在这个本地账号中。' : '登录后，把喜欢的伙伴和队伍留在这里。'}</p></div>${user ? `<div class="account-summary"><span>${profile.favorites.length} 个收藏</span><span>${profile.teams.length} 支队伍</span><span>${profile.practices.length} 次练习</span></div><button class="button dark full" data-action="logout">退出登录 / 切换账号</button>` : `<div class="account-tabs"><button data-action="account-mode" data-mode="login" class="${isRegister ? '' : 'active'}">登录</button><button data-action="account-mode" data-mode="register" class="${isRegister ? 'active' : ''}">本地注册</button></div><form id="account-form" data-mode="${mode}">${isRegister ? '<label>昵称<input name="name" maxlength="16" required placeholder="怎么称呼你？" autocomplete="nickname"></label>' : ''}<label>账号<input name="username" maxlength="20" required autocomplete="username" ${isRegister ? 'placeholder="3—20 位，字母开头"' : 'value="leaf"'}></label><label>演示密码<input name="password" type="password" minlength="6" maxlength="40" required autocomplete="${isRegister ? 'new-password' : 'current-password'}" ${isRegister ? 'placeholder="请勿使用真实常用密码"' : 'value="poke123"'}></label><p id="account-error" class="form-error" role="alert"></p><button class="button orange full" type="submit">${isRegister ? '创建并进入' : '进入发现室'} ↗</button></form><p class="helper account-hint">演示账号 leaf / blue，密码 poke123。<br>账号只存在于当前浏览器，用于课程演示。</p>`}`;
+    if (!$('#account-dialog').open) $('#account-dialog').showModal();
+  }
+  function needLogin() { if (user) return false; openAccount(); return true; }
+  function updateDetail() { if ($('#detail-dialog').open) openDetail(Number($('#detail-content').dataset.id)); }
+  function go(next) {
+    view = next; query = ''; filterType = ''; sort = 'number';
+    render(); window.scrollTo({ top: 0, behavior: 'instant' }); $('#main').focus({ preventScroll: true });
   }
   document.addEventListener('click', event => {
-    const button = event.target.closest('button');
-    if (!button) return;
+    const button = event.target.closest('button'); if (!button) return;
     if (button.dataset.close) { $(`#${button.dataset.close}`).close(); return; }
-    if (button.dataset.view) { view = button.dataset.view; action(button, async () => { await render(); window.scrollTo(0, 0); $('#main-content').focus({ preventScroll: true }); }); return; }
-    if (button.dataset.action === 'new') openOrderForm();
-    if (button.dataset.order) openDetail(button.dataset.order);
-    if (button.dataset.claim) action(button, async () => { await store.claimOrder(button.dataset.claim); await render(); openDetail(button.dataset.claim); toast('接单成功，这张工单由你负责了。'); });
-    if (button.dataset.stock) openStock(button.dataset.stock, button.dataset.type);
-    if (button.dataset.materialOrder) openStock(snapshot.parts[0].id, 'out', button.dataset.materialOrder);
-    if (button.dataset.export) action(button, async () => downloadCSV(button.dataset.export));
-  });
-  $('#account-button').addEventListener('click', event => action(event.currentTarget, async () => { await store.logout(); document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); view = 'dashboard'; query = ''; groupFilter = ''; await render(); }));
-  $('#login-form').addEventListener('submit', event => {
-    event.preventDefault(); $('#login-error').textContent = '';
-    action(event.submitter, async () => { try { await store.login($('#login-user').value, $('#login-password').value); await render(); } catch (error) { $('#login-error').textContent = error.message; } });
-  });
-  $('#order-form').addEventListener('submit', event => {
-    event.preventDefault(); $('#order-error').textContent = '';
-    action(event.submitter, async () => { try { const id = await store.createOrder(Object.fromEntries(new FormData(event.target))); $('#order-dialog').close(); await render(); toast(`登记成功 · ${id}`); openDetail(id); } catch (error) { $('#order-error').textContent = error.message; } });
-  });
-  document.addEventListener('submit', event => {
-    const form = event.target;
-    if (!['status-form', 'assign-form', 'stock-form'].includes(form.id)) return;
-    event.preventDefault();
-    action(event.submitter, async () => {
-      const values = Object.fromEntries(new FormData(form));
-      if (form.id === 'stock-form') {
-        try { await store.movePart(values); $('#stock-dialog').close(); await render(); const detailId = $('#status-form')?.dataset.id || $('#assign-form')?.dataset.id; if ($('#detail-dialog').open && detailId) openDetail(detailId); toast('配件台账已更新。'); } catch (error) { $('#stock-error').textContent = error.message; }
-      } else {
-        if (form.id === 'status-form') await store.updateStatus(form.dataset.id, values.status, values.note);
-        else await store.assignOrder(form.dataset.id, values.ownerId);
-        await render(); openDetail(form.dataset.id); toast(form.id === 'status-form' ? '维修进度已更新。' : '派单成功。');
+    if (button.dataset.view) { go(button.dataset.view); return; }
+    const id = Number(button.dataset.id), operation = button.dataset.action;
+    action(button, async () => {
+      if (operation === 'account') return openAccount();
+      if (operation === 'account-mode') return openAccount(button.dataset.mode);
+      if (operation === 'logout') { await store.logout(); await refreshUser(); quiz = null; $('#account-dialog').close(); render(); return toast('已退出。可以切换账号继续探索。'); }
+      if (operation === 'detail') return openDetail(id);
+      if (operation === 'explore') return $('.catalog-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (operation === 'filter') { filterType = button.dataset.type; $('#type-filter').value = filterType; return updateGrid(); }
+      if (operation === 'reset-filters') { query = ''; filterType = ''; sort = 'number'; $('#search').value = ''; $('#type-filter').value = ''; $('#sort').value = 'number'; return updateGrid(); }
+      if (operation === 'favorite') { if (needLogin()) return; profile = await store.toggleFavorite(id); render(); updateDetail(); return; }
+      if (operation === 'compare') {
+        if (compareIds.includes(id)) compareIds = compareIds.filter(value => value !== id);
+        else { if (compareIds.length === 3) return toast('最多比较三只伙伴，请先移除一只。'); compareIds.push(id); }
+        updateGrid(); compareTray(); updateDetail(); if ($('#compare-dialog').open && compareIds.length >= 2) openCompare(); return;
+      }
+      if (operation === 'clear-compare') { compareIds = []; updateGrid(); compareTray(); return; }
+      if (operation === 'open-compare') return openCompare();
+      if (operation === 'add') {
+        if (draft.includes(id)) return toast('这位伙伴已经在队伍里了。');
+        if (draft.length === 6) return toast('六个位置已经满了，去队伍页调整一下。');
+        const budget = rules.teamBudget([...draft.map(byId), byId(id)]);
+        if (!budget.valid) return toast(`加入${byId(id).name}需要 ${byId(id).total} 点，将超出预算 ${budget.over} 点。去队伍页调整成员吧。`);
+        draft.push(id); render(); updateDetail(); return toast(`${byId(id).name}加入队伍 · ${draft.length}/6`);
+      }
+      if (operation === 'remove-member') { draft = draft.filter(value => value !== id); return render(); }
+      if (operation === 'new-team') { draft = []; teamMeta = { id: null, name: '', note: '' }; return render(); }
+      if (operation === 'load-team') {
+        const saved = profile.teams.find(item => item.id === button.dataset.id);
+        if (!saved) return;
+        draft = [...saved.members]; teamMeta = { id: saved.id, name: saved.name, note: saved.note }; render(); $('.team-builder').scrollIntoView({ behavior: 'smooth' }); return;
+      }
+      if (operation === 'compare-team') {
+        if (!draft.length) return toast('先从图鉴加入伙伴，再选择参考队伍。');
+        opponentChoice = { kind: button.dataset.kind, id: button.dataset.id };
+        render(); $('#team-comparison').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#team-comparison').focus({ preventScroll: true }); return;
+      }
+      if (operation === 'use-challenge') {
+        const preset = challenges.find(item => item.id === button.dataset.id);
+        if (!preset) return;
+        if ((draft.length || teamMeta.name) && !window.confirm('用参考队伍替换当前未保存的搭配？已经保存的队伍会保留。')) return;
+        draft = [...preset.members]; teamMeta = { id: null, name: `${preset.name} · 我的调整`, note: `以作者预设“${preset.name}”为起点，尝试自己的调整。` };
+        render(); $('.team-builder').scrollIntoView({ behavior: 'smooth', block: 'start' }); return toast('已载入参考组合，移除或替换成员，试试自己的方案。');
+      }
+      if (operation === 'delete-team') {
+        const saved = profile.teams.find(item => item.id === button.dataset.id);
+        if (!saved || !window.confirm(`删除“${saved.name}”？`)) return;
+        await store.deleteTeam(saved.id);
+        if (opponentChoice?.kind === 'saved' && opponentChoice.id === saved.id) opponentChoice = null;
+        if (teamMeta.id === saved.id) teamMeta = { id: null, name: teamMeta.name, note: teamMeta.note };
+        profile = await store.getProfile(); render(); return toast('这支保存的队伍已删除。');
+      }
+      if (operation === 'example') {
+        const examples = { fire: ['fire', 1], water: ['water', 7], electric: ['electric', 27], ice: ['ice', 149] };
+        [attack, labTargetId] = examples[button.dataset.example];
+        return launchLab();
+      }
+      if (operation === 'lab-fire') return launchLab();
+      if (operation === 'start-quiz') {
+        const questions = Array.from({ length: 5 }, () => {
+          const a = catalog.types[Math.floor(Math.random() * catalog.types.length)].id;
+          const d = catalog.types[Math.floor(Math.random() * catalog.types.length)].id;
+          return { attack: a, defense: d, answer: rules.multiplier(a, [d], catalog.types) };
+        });
+        quiz = { questions, index: 0, score: 0, answered: false, saved: false }; $('#quiz-content').innerHTML = quizHtml(); return;
+      }
+      if (operation === 'quiz-answer' && quiz && !quiz.answered) {
+        quiz.choice = Number(button.dataset.value); quiz.answered = true;
+        if (quiz.choice === quiz.questions[quiz.index].answer) quiz.score++;
+        $('#quiz-content').innerHTML = quizHtml(); return;
+      }
+      if (operation === 'quiz-next' && quiz?.answered) {
+        quiz.index++; quiz.answered = false;
+        if (quiz.index === 5 && user) { await store.savePractice(quiz.score, 5); profile = await store.getProfile(); quiz.saved = true; }
+        return render();
+      }
+      if (operation === 'export') {
+        if (needLogin()) return;
+        const backup = await store.exportProfile();
+        const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob), anchor = document.createElement('a');
+        anchor.href = url; anchor.download = `poke-discovery-${user.username}-${new Date().toISOString().slice(0, 10)}.json`; anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000); toast('个人备份已导出。');
       }
     });
   });
-  document.addEventListener('input', event => { if (event.target.id === 'search-orders') { query = event.target.value; $('#board-columns').innerHTML = board(); $('#board-meta').textContent = `${filteredOrders().length} 单 · 点击卡片查看详情`; } });
-  document.addEventListener('change', event => {
-    if (event.target.id === 'filter-group') { groupFilter = event.target.value; $('#board-columns').innerHTML = board(); $('#board-meta').textContent = `${filteredOrders().length} 单 · 点击卡片查看详情`; }
-    if (event.target.id === 'stock-type') refreshStockOrders($('#stock-order').value);
+  document.addEventListener('input', event => {
+    if (event.target.id === 'search') { query = event.target.value; updateGrid(); }
+    if (event.target.form?.id === 'team-form') teamMeta[event.target.name] = event.target.value;
   });
-  document.querySelectorAll('[data-icon]').forEach(element => { element.innerHTML = icon(element.dataset.icon); });
-  render().catch(error => { document.body.innerHTML = `<main class="fatal-error"><h1>暂时无法打开工作台</h1><p>${escape(error.message)}</p><p>请保留已有数据，检查浏览器设置后再刷新。</p></main>`; });
+  document.addEventListener('change', event => {
+    const input = event.target;
+    if (input.id === 'type-filter') { filterType = input.value; updateGrid(); }
+    if (input.id === 'sort') { sort = input.value; updateGrid(); }
+    if (input.id === 'team-opponent') {
+      const [kind, id] = input.value.split(':');
+      opponentChoice = id ? { kind, id } : null;
+      const scrollPosition = window.scrollY;
+      render(); window.scrollTo({ top: scrollPosition, behavior: 'instant' });
+      $('#team-opponent').focus({ preventScroll: true });
+    }
+    if (['attack-type', 'lab-target'].includes(input.id)) {
+      attack = $('#attack-type').value; labTargetId = Number($('#lab-target').value);
+      labLaunched = false; updateLab();
+    }
+    if (input.id === 'import-file') action(null, async () => {
+      const file = input.files[0]; input.value = ''; if (!file) return;
+      if (needLogin()) return;
+      if (file.size > 500000) throw new Error('备份文件不能超过 500 KB。');
+      let backup; try { backup = JSON.parse(await file.text()); } catch { throw new Error('请选择格式正确的 JSON 文件。'); }
+      if (!window.confirm(`导入将替换“${user.name}”的收藏、队伍与练习记录。建议先导出当前记录。继续吗？`)) return;
+      profile = await store.importProfile(backup); draft = []; teamMeta = { id: null, name: '', note: '' }; opponentChoice = null; quiz = null; render(); toast('备份已导入当前账号。');
+    });
+  });
+  document.addEventListener('submit', event => {
+    if (!['account-form', 'team-form'].includes(event.target.id)) return;
+    event.preventDefault(); const form = event.target, values = Object.fromEntries(new FormData(form));
+    action(event.submitter, async () => {
+      if (form.id === 'account-form') {
+        try {
+          if (form.dataset.mode === 'register') await store.register(values); else await store.login(values.username, values.password);
+          await refreshUser(); quiz = null; $('#account-dialog').close(); render(); toast(`你好，${user.name}。开始发现吧！`);
+        } catch (error) { $('#account-error').textContent = error.message; }
+      } else {
+        if (needLogin()) return;
+        const saved = await store.saveTeam({ ...values, id: teamMeta.id, members: [...draft] });
+        teamMeta = { id: saved.id, name: saved.name, note: saved.note }; profile = await store.getProfile(); render(); toast('队伍和笔记已保存。');
+      }
+    });
+  });
+  document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', event => {
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+  }));
+  async function boot() {
+    try { [catalog, challenges] = await Promise.all([store.getCatalog(), store.getChallenges()]); await refreshUser(); render(); }
+    catch (error) { $('#main').innerHTML = `<div class="empty-state"><h1>暂时无法打开发现室</h1><p>${escape(error.message)}</p><p>请确认资料文件完整，并允许浏览器使用本地存储。</p></div>`; }
+  }
+  boot();
 })();
